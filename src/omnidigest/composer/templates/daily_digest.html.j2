@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>{{ domain_name }} Digest</title>
+</head>
+<body>
+    <h1>{{ domain_name }} - {{ generated_at.strftime('%Y-%m-%d') }}</h1>
+    <p>{{ highlights }}</p>
+    {% for summary in summaries %}
+    <article>
+        <h2>{{ summary.article.title }}</h2>
+        <p>{{ summary.summary }}</p>
+        <p><a href="{{ summary.article.link }}">Read more</a></p>
+    </article>
+    {% endfor %}
+    {% if insights %}
+    <section>
+        <h3>Impact Insights</h3>
+        <ul>
+        {% for insight in insights %}
+            <li>{{ insight }}</li>
+        {% endfor %}
+        </ul>
+    </section>
+    {% endif %}
+</body>
+</html>

@@ -1,0 +1,10 @@
+name: Finance Daily Digest
+feeds:
+  - url: https://www.investopedia.com/rss/headlines.rss
+    tags: [finance, markets]
+  - url: https://www.ft.com/?format=rss
+    tags: [economy, global]
+analysis:
+  keywords:
+    - economy
+    - markets

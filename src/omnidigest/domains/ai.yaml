@@ -1,0 +1,10 @@
+name: AI Daily Digest
+feeds:
+  - url: https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml
+    tags: [ai, technology]
+  - url: https://feeds.feedburner.com/omgubuntu
+    tags: [linux, open-source]
+analysis:
+  keywords:
+    - artificial intelligence
+    - machine learning

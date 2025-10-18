@@ -1,0 +1,16 @@
+# {{ domain_name }} - {{ generated_at.strftime('%Y-%m-%d') }}
+
+{{ highlights }}
+
+{% for summary in summaries %}
+## {{ summary.article.title }}
+{{ summary.summary }}
+
+[Read more]({{ summary.article.link }})
+
+{% endfor %}
+{% if insights %}
+### Impact Insights
+{% for insight in insights %}- {{ insight }}
+{% endfor %}
+{% endif %}
