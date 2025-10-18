@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  api:
+    build: .
+    environment:
+      - PYTHONPATH=/app/src
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: uvicorn omnidigest.main:app --host 0.0.0.0 --port 8000 --reload
