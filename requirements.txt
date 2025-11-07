@@ -18,3 +18,4 @@ premailer
 numpy
 scikit-learn
 pyyaml
+portalocker
