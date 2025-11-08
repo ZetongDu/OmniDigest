@@ -2,25 +2,16 @@ name: OmniDigest Daily Cron
 
 on:
   schedule:
-    # GitHub Actions 使用 UTC 时间
-    # 这里是每天 23:00 UTC （≈ 北京时间次日 07:00）
-    - cron: '0 23 * * *'
-  # 允许手动触发，方便你测试
+    # 每 10 分钟调用一次，由 /cron 根据用户配置决定是否发送
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
 
 jobs:
   run-digests:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger AI digest
+      - name: Trigger OmniDigest cron
         run: |
-          curl -X POST "${{ secrets.OMNIDIGEST_URL }}/trigger?domain=ai" \
+          curl -X POST "${{ secrets.OMNIDIGEST_URL }}/cron" \
             -H "Authorization: Bearer ${{ secrets.TRIGGER_TOKEN }}" \
             -H "Content-Length: 0"
-
-      # 如果未来要加 finance，取消注释下面这一段即可
-      # - name: Trigger Finance digest
-      #   run: |
-      #     curl -X POST "${{ secrets.OMNIDIGEST_URL }}/trigger?domain=finance" \
-      #       -H "Authorization: Bearer ${{ secrets.TRIGGER_TOKEN }}" \
-      #       -H "Content-Length: 0"
