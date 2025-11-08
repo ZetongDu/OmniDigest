@@ -19,3 +19,4 @@ numpy
 scikit-learn
 pyyaml
 portalocker
+sendgrid==6.10.0
