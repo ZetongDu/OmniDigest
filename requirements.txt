@@ -20,3 +20,4 @@ scikit-learn
 pyyaml
 portalocker
 sendgrid==6.10.0
+SQLAlchemy>=2.0.0
