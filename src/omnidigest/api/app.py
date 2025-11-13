@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from typing import Optional, Dict, List
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Query
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Header,
+    Depends,
+    Query,
+    Request,
+)
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, EmailStr
 from loguru import logger
+from jose import jwt
+from jose.exceptions import JWTError
 
 from ..config.settings import get_settings
 from ..pipeline.digest_core import run_digest_core
@@ -19,7 +29,7 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 
-app = FastAPI(title="OmniDigest API", version="0.3.0")
+app = FastAPI(title="OmniDigest API", version="0.4.0")
 
 
 # ============= 启动时初始化 DB =============
@@ -55,7 +65,11 @@ class SubscribeResponse(BaseModel):
     timezone: str
 
 
-# ============= 鉴权工具 =============
+class MagicLinkRequest(BaseModel):
+    email: EmailStr
+
+
+# ============= 鉴权&时间工具 =============
 
 def verify_trigger_token(authorization: Optional[str] = Header(None)) -> None:
     token = os.getenv("TRIGGER_TOKEN")
@@ -78,6 +92,42 @@ def get_tz(tz_name: Optional[str]) -> ZoneInfo:
         return ZoneInfo(tz_name)
     except Exception:
         return ZoneInfo("Asia/Shanghai")
+
+
+def _get_secret_key() -> str:
+    settings = get_settings()
+    secret = getattr(settings, "secret_key", None) or os.getenv("SECRET_KEY")
+    if not secret:
+        raise RuntimeError("SECRET_KEY / secret_key is not configured")
+    return secret
+
+
+def _create_session_token(subscriber: db_models.Subscriber) -> str:
+    """
+    基于 Subscriber 信息生成一个登录会话 JWT，存进 cookie。
+    有效期：30 天。
+    """
+    secret = _get_secret_key()
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(days=30)
+
+    payload = {
+        "sub": str(subscriber.id),
+        "email": subscriber.email,
+        "exp": exp,
+        "iat": now,
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def _decode_session_token(token: str) -> Optional[Dict]:
+    secret = _get_secret_key()
+    try:
+        data = jwt.decode(token, secret, algorithms=["HS256"])
+        return data
+    except JWTError as e:
+        logger.warning("Session token decode failed: {}", e)
+        return None
 
 
 # ============= 基础探活 =============
@@ -105,7 +155,7 @@ def version():
 @app.post("/run_digest", response_model=RunResult)
 def run_digest(domain: str = Query("ai")):
     """
-    手动触发一次：仅供你调试使用。
+    手动触发一次：仅供你本地/调试使用。
     """
     result = run_digest_core(domain, write_outputs=True, send_email=True)
     return RunResult(
@@ -210,9 +260,11 @@ def subscribe(req: SubscribeRequest):
         db.close()
 
 
-# 可选：简单退订接口
 @app.post("/unsubscribe")
 def unsubscribe(email: EmailStr, domain: str = Query("ai")):
+    """
+    简单退订接口：按 email + domain 关闭 active。
+    """
     domain = domain.lower()
     db = SessionLocal()
     try:
@@ -238,6 +290,158 @@ def unsubscribe(email: EmailStr, domain: str = Query("ai")):
         s.active = False
         db.commit()
         return {"status": "ok", "message": "unsubscribed"}
+    finally:
+        db.close()
+
+
+# ============= Magic Link 登录入口（Step 5） =============
+
+@app.post("/auth/magic-link")
+def request_magic_link(req: MagicLinkRequest, request: Request):
+    """
+    请求一封登录/管理订阅用的 magic link。
+    - 如果邮箱不存在，则先创建 Subscriber（默认 verified=False）
+    - 生成 30 分钟有效的 JWT token
+    - 发送带有链接的邮件
+    """
+    secret = _get_secret_key()
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=30)
+
+    db = SessionLocal()
+    try:
+        # 找或创建 Subscriber
+        sub = (
+            db.query(db_models.Subscriber)
+            .filter(db_models.Subscriber.email == req.email)
+            .one_or_none()
+        )
+        if not sub:
+            sub = db_models.Subscriber(
+                email=req.email,
+                timezone=get_settings().timezone or "Asia/Shanghai",
+                verified=False,
+                created_at=now,
+            )
+            db.add(sub)
+            db.commit()
+            db.refresh(sub)
+
+        # 生成 magic token
+        payload = {
+            "email": sub.email,
+            "sub_id": sub.id,
+            "exp": exp,
+            "iat": now,
+        }
+        token = jwt.encode(payload, secret, algorithm="HS256")
+
+        # 生成 magic link URL（基于当前请求构造）
+        magic_url = str(request.url_for("magic_login")) + f"?token={token}"
+
+        # 发邮件
+        try:
+            html = f"""
+            <html>
+              <body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+                <p>Hi,</p>
+                <p>Click the link below to access your OmniDigest subscription:</p>
+                <p><a href="{magic_url}" target="_blank">Open OmniDigest</a></p>
+                <p style="font-size:12px;color:#888;">This link will expire in 30 minutes.</p>
+              </body>
+            </html>
+            """
+            msg = EmailMessage(
+                to=[sub.email],
+                subject="Your OmniDigest magic link",
+                body_html=html,
+            )
+            res = Emailer().send(msg)
+            logger.info("Magic link email send result: {}", res)
+        except Exception as e:
+            logger.exception("Magic link send failed: {}", e)
+            raise HTTPException(status_code=500, detail="Failed to send magic link email")
+
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+
+@app.get("/auth/magic", name="magic_login", response_class=HTMLResponse)
+def magic_login(token: str):
+    """
+    用户点击邮件里的 magic link 访问这里。
+    - 校验 JWT（签名 + 过期）
+    - 找到 Subscriber，标记 verified=True
+    - 生成长期 session token 写入 cookie
+    - 返回一个简单的 HTML 欢迎页（后续可以替换为前端）
+    """
+    secret = _get_secret_key()
+
+    try:
+        data = jwt.decode(token, secret, algorithms=["HS256"])
+    except JWTError as e:
+        logger.warning("Magic link token invalid: {}", e)
+        return HTMLResponse(
+            "<h3>Link expired or invalid.</h3>",
+            status_code=400,
+        )
+
+    email = data.get("email")
+    sub_id = data.get("sub_id")
+
+    if not email or not sub_id:
+        return HTMLResponse(
+            "<h3>Invalid link.</h3>",
+            status_code=400,
+        )
+
+    db = SessionLocal()
+    try:
+        sub = (
+            db.query(db_models.Subscriber)
+            .filter(db_models.Subscriber.id == sub_id)
+            .one_or_none()
+        )
+        if not sub:
+            return HTMLResponse(
+                "<h3>Subscriber not found.</h3>",
+                status_code=404,
+            )
+
+        # 标记 verified=True
+        if not sub.verified:
+            sub.verified = True
+            db.commit()
+
+        # 生成 session token
+        session_token = _create_session_token(sub)
+
+        # 简单欢迎页（后续可替换成前端页面）
+        html = f"""
+        <html>
+          <body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;">
+            <h2>Welcome back 👋</h2>
+            <p>You are logged in as <b>{sub.email}</b>.</p>
+            <p>We will send your <b>AI Daily Brief</b> according to your preferences.</p>
+            <p style="margin-top:20px;font-size:13px;color:#666;">
+              You can close this tab now.
+            </p>
+          </body>
+        </html>
+        """
+
+        response = HTMLResponse(html)
+        # 写入 session cookie（简化版）
+        response.set_cookie(
+            key="omnidigest_session",
+            value=session_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=30 * 24 * 3600,
+        )
+        return response
     finally:
         db.close()
 
@@ -283,7 +487,6 @@ def cron():
        - 按用户时区判断是否到达其配置的发送时间
        - 若到达且今天还没给该用户该 domain 发过 → 发送邮件 + 写 SendLog
     """
-    settings = get_settings()
     now_utc = datetime.now(timezone.utc)
     today = date.fromtimestamp(now_utc.timestamp()).isoformat()
 
